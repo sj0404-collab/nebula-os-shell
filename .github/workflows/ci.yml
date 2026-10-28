@@ -34,7 +34,7 @@ jobs:
 
       - name: Bridge integration test (bun test → real agent answer over SSE)
         run: bun test opencode/bridge.test.ts
-        timeout-minutes: 6
+        timeout-minutes: 8
 
       - name: Playwright chromium
         run: npx playwright install --with-deps chromium
