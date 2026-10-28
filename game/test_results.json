@@ -1,0 +1,43 @@
+{
+  "wasm32": {
+    "game": "Nebula Strike",
+    "studio": "Big Pickle Studios",
+    "target": "wasm32-wasi",
+    "pointer_bits": 32,
+    "autotest": {
+      "result": "WIN",
+      "score": 7500,
+      "wave_reached": 5,
+      "frames_simulated": 2563,
+      "lives_left": 3
+    },
+    "benchmark": {
+      "simulated_seconds": 60,
+      "frames": 3600,
+      "checksum": 11544
+    },
+    "wall_seconds": 0.0028
+  },
+  "wasm64": {
+    "game": "Nebula Strike",
+    "studio": "Big Pickle Studios",
+    "target": "wasm64-wasi (memory64)",
+    "pointer_bits": 64,
+    "size_bits": 64,
+    "pointer_max": "-1",
+    "autotest": {
+      "result": "WIN",
+      "score": 7500,
+      "wave_reached": 5,
+      "frames_simulated": 2563,
+      "lives_left": 3,
+      "wall_seconds": 0.0018
+    },
+    "benchmark": {
+      "simulated_seconds": 60,
+      "frames": 3600,
+      "wall_seconds": 0.0021,
+      "logic_fps": 1745404.5
+    }
+  }
+}
