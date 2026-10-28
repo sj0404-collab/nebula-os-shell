@@ -29,7 +29,8 @@ export default function StartMenu() {
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 30, opacity: 0 }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className="absolute bottom-12 left-0 z-[9990] flex h-[540px] w-[520px] max-w-[96vw] overflow-hidden rounded-tr-lg border border-white/15 bg-[#1b1b1b]/95 backdrop-blur-xl shadow-[0_20px_80px_rgba(0,0,0,0.7)]"
+            className="absolute bottom-12 left-0 z-[9990] flex h-[540px] max-h-[calc(100vh-3rem)] w-[520px] max-w-[96vw] overflow-hidden rounded-tr-lg border border-white/15 bg-[#1b1b1b]/95 backdrop-blur-xl shadow-[0_20px_80px_rgba(0,0,0,0.7)]"
+            data-startmenu
           >
             {/* rail */}
             <div className="flex w-12 flex-col items-center border-r border-white/5 py-3 gap-3">

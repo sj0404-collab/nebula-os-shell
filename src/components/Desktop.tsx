@@ -31,7 +31,9 @@ export default function Desktop() {
             key={icon.id + icon.label}
             className="group flex w-[76px] flex-col items-center gap-1 rounded border border-transparent p-1.5 outline-none transition-colors hover:border-white/25 hover:bg-white/10 focus:border-sky-400/60 focus:bg-sky-400/15"
             onDoubleClick={icon.onOpen}
-            onClick={icon.onOpen}
+            onPointerUp={e => { if (e.pointerType === 'touch' || e.pointerType === 'pen') icon.onOpen(); }}
+            onKeyDown={e => { if (e.key === 'Enter') icon.onOpen(); }}
+            data-desktop-icon={icon.id}
           >
             <AppIcon id={icon.id} size={38} className="drop-shadow-[0_2px_3px_rgba(0,0,0,0.8)]" />
             <span className="text-[10px] leading-tight text-white text-center [text-shadow:0_1px_3px_rgba(0,0,0,0.9),0_0_6px_rgba(0,0,0,0.8)] line-clamp-2">{icon.label}</span>

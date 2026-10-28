@@ -38,14 +38,18 @@ export default function TerminalApp() {
 
   const prompt = `C:\\${state.cwd.slice(1).join('\\')}${state.cwd[0] === 'C:' && state.cwd.length === 1 ? '' : ''}>`;
 
-  const fsList = (path: string[]): string[] | null => {
+  /** Windows-style `dir` listing: <DIR> for folders, right-aligned sizes for files. */
+  const fsDir = (path: string[]): string[] | null => {
     let cur = fs;
     for (const seg of path.slice(1)) {
       const next = cur.children?.find(c => c.name.toLowerCase() === seg.toLowerCase());
       if (!next) return null;
       cur = next;
     }
-    return cur.children?.map(c => (c.type === 'dir' ? c.name + '\\' : c.name)) ?? [];
+    const stamp = '10/28/2026  07:30 PM';
+    return (cur.children ?? []).map(c => c.type === 'dir'
+      ? `${stamp}    <DIR>          ${c.name}`
+      : `${stamp}    ${String((c.size ?? 0).toLocaleString('en-US')).padStart(14)} ${c.name}`);
   };
 
   const exec = async (raw: string) => {
@@ -106,9 +110,10 @@ export default function TerminalApp() {
       case 'echo': out(rest.replace(/^"|"$/g, '')); return;
       case 'dir': {
         const p = args.length ? resolvePath(state.cwd, args.join(' ')) : state.cwd;
-        const list = fsList(p);
+        const list = fsDir(p);
         if (!list) { out(`File Not Found`, 'err'); return; }
-        out([` Directory of C:\\${p.slice(1).join('\\')}`, '', ...list.map(n => '  ' + n), '', `               ${list.length} File(s)`].join('\n')); return;
+        const nFiles = list.filter(l => !l.includes('<DIR>')).length;
+        out([' Volume in drive C is Windows', ' Volume Serial Number is B16A-71CC', '', ` Directory of C:\\${p.slice(1).join('\\')}`, '', ...list, `               ${nFiles} File(s)`, `               ${list.length - nFiles} Dir(s)  412,338,974,720 bytes free`].join('\n')); return;
       }
       case 'cd': {
         if (!rest) { out(`C:\\${state.cwd.slice(1).join('\\')}`); return; }

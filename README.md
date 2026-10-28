@@ -27,6 +27,20 @@ Scripts
 | `npm run opencode` | `bun run opencode/bridge.ts` — real agent bridge |
 | `npm run opencode:compile` | `bun build --compile` → single `opencode-bridge` binary (serves `dist/` + API) |
 | `npm run test:opencode` | `bun test` — end‑to‑end test of the bridge + real model answer |
+| `npm run test:e2e` | Playwright desktop e2e (15 scenarios: windows, terminal, game autotest, opencode demo/live, phone viewport) |
+| `node e2e/with-bridge.mjs` | starts the real bridge, runs e2e with the LIVE opencode window, stops it |
+| `npm test` / `npm run test:all` | lint + typecheck + e2e (+ bridge test) |
+| `npm run opencode:compile:all` | binaries for linux‑x64/arm64, macOS arm64/x64, windows‑x64 → `release/` |
+
+## Cross‑platform
+
+* Runs on **Windows, macOS and Linux**: the bridge finds `opencode` in PATH, `~/.bun/bin`, `node_modules/.bin`,
+  `%APPDATA%\npm`, `/opt/homebrew/bin`, wraps `.cmd` shims on Windows and falls back to `bunx opencode-ai`.
+* CI (`.github/workflows/ci.yml`) runs lint → typecheck → build → bun bridge test (real model) → Playwright e2e
+  on **ubuntu‑latest, windows‑latest and macos‑latest**, then builds single‑file bridge executables for all
+  platforms; a `v*` tag publishes them (with `dist/`) as a GitHub Release.
+* The desktop works with mouse, touch and pen (pointer events), fits phone screens (windows open maximized
+  under 640 px, are clamped to the viewport on resize/rotation) and needs only a modern browser.
 
 ## Project layout
 

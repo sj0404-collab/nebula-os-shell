@@ -101,7 +101,8 @@ export default function OpencodeApp() {
       const fp = String(part.state.input?.filePath ?? '');
       if (fp) setTouched(t => (t.includes(fp) ? t : [...t, fp]));
     }
-    if (part.type === 'step-finish' && part.tokens?.total) setTokens(t => t + (part.tokens?.output ?? 0) + (part.tokens?.input ?? 0));
+    // context size of the latest step (input + output + reasoning), like the real TUI footer
+    if (part.type === 'step-finish' && part.tokens?.total) setTokens(part.tokens.total);
   }, []);
 
   const startRealSession = useCallback(async () => {

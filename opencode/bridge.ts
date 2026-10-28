@@ -20,31 +20,49 @@
  * Single-file executable:  bun build --compile opencode/bridge.ts --outfile opencode-bridge
  */
 import { existsSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, resolve, extname } from 'node:path';
+import { homedir, platform } from 'node:os';
+import { join, resolve, extname, dirname, sep } from 'node:path';
+
+const IS_WIN = platform() === 'win32';
 
 const BRIDGE_PORT = Number(process.env.BRIDGE_PORT ?? 8787);
 const OC_PORT = Number(process.env.OPENCODE_PORT ?? 4096);
 const MODEL = process.env.OPENCODE_MODEL ?? 'opencode/big-pickle';
 // When compiled with `bun build --compile` import.meta.dir points into the virtual /$bunfs,
 // so fall back to the directory the binary is launched from.
-const ROOT = import.meta.dir.startsWith('/$bunfs') || /^[A-Za-z]:\\~BUN/.test(import.meta.dir)
-  ? process.cwd()
-  : resolve(import.meta.dir, '..');
+const COMPILED = import.meta.dir.includes('$bunfs') || /[\\/]~BUN[\\/]/.test(import.meta.dir);
+function detectRoot(): string {
+  if (!COMPILED) return resolve(import.meta.dir, '..');
+  // compiled binary: prefer cwd, then the folder next to the executable (works on Windows/macOS/Linux)
+  for (const c of [process.cwd(), dirname(process.execPath)]) if (existsSync(join(c, 'dist'))) return c;
+  return process.cwd();
+}
+const ROOT = detectRoot();
 const WORKSPACE = resolve(process.env.OPENCODE_WORKSPACE ?? ROOT);
 const DIST = join(ROOT, 'dist');
 const OC_URL = `http://127.0.0.1:${OC_PORT}`;
 const API_PREFIX = '/api/opencode';
 
+/** Wrap Windows .cmd/.bat shims so Bun.spawn can run them. */
+function cmdFor(bin: string): string[] {
+  return IS_WIN && /\.(cmd|bat)$/i.test(bin) ? ['cmd.exe', '/d', '/s', '/c', bin] : [bin];
+}
+
 function findOpencode(): string[] {
-  if (process.env.OPENCODE_BIN) return [process.env.OPENCODE_BIN];
+  if (process.env.OPENCODE_BIN) return cmdFor(process.env.OPENCODE_BIN);
   const inPath = Bun.which('opencode');
-  if (inPath) return [inPath];
-  const bunBin = join(homedir(), '.bun', 'bin', 'opencode');
-  if (existsSync(bunBin)) return [bunBin];
-  const npmBin = join(ROOT, 'node_modules', '.bin', 'opencode');
-  if (existsSync(npmBin)) return [npmBin];
-  return ['bunx', 'opencode-ai@latest'];
+  if (inPath) return cmdFor(inPath);
+  const exts = IS_WIN ? ['.exe', '.cmd', ''] : [''];
+  const dirs = [
+    join(homedir(), '.bun', 'bin'),                                   // bun install -g opencode-ai
+    join(ROOT, 'node_modules', '.bin'),                               // npm i opencode-ai
+    ...(IS_WIN && process.env.APPDATA ? [join(process.env.APPDATA, 'npm')] : []),  // npm i -g on Windows
+    '/usr/local/bin', '/opt/homebrew/bin',                            // npm -g / brew on macOS & Linux
+  ];
+  for (const d of dirs) for (const e of exts) { const f = join(d, 'opencode' + e); if (existsSync(f)) return cmdFor(f); }
+  const bunx = Bun.which('bunx') ?? (IS_WIN ? 'bunx.exe' : 'bunx');
+  console.warn('[bridge] opencode not found — falling back to `bunx opencode-ai@latest` (first start downloads it)');
+  return [bunx, 'opencode-ai@latest'];
 }
 
 async function health(): Promise<{ ok: boolean; version?: string }> {
@@ -58,7 +76,8 @@ async function health(): Promise<{ ok: boolean; version?: string }> {
   }
 }
 
-let child: ReturnType<typeof Bun.spawn> | null = null;
+let child: Bun.Subprocess | null = null;
+const killChild = () => { try { child?.kill(); } catch { /* ignore */ } };
 let ocVersion = 'unknown';
 
 async function ensureOpencode(): Promise<void> {
@@ -72,14 +91,14 @@ async function ensureOpencode(): Promise<void> {
     stderr: 'inherit',
     env: { ...process.env, OPENCODE_SERVER_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD ?? '' },
   });
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 120_000; // bunx fallback may need to download first
   while (Date.now() < deadline) {
     await Bun.sleep(500);
     const hh = await health();
     if (hh.ok) { ocVersion = hh.version ?? ocVersion; console.log(`[bridge] opencode v${ocVersion} ready at ${OC_URL}`); return; }
-    if (child.exitCode !== null) throw new Error(`opencode exited with code ${child.exitCode}`);
+    if (child.exitCode !== null) throw new Error(`opencode exited with code ${child.exitCode} — install it: bun install -g opencode-ai  (or npm i -g opencode-ai)`);
   }
-  throw new Error('opencode serve did not become healthy within 60 s');
+  throw new Error('opencode serve did not become healthy within 120 s');
 }
 
 const CORS: Record<string, string> = {
@@ -116,16 +135,25 @@ function serveStatic(pathname: string): Response {
   if (!existsSync(DIST)) {
     return new Response(`opencode bridge is running.\nAPI: ${API_PREFIX}/*  →  ${OC_URL}\nNo ./dist found — run \`npm run build\` to serve the OS shell from here, or use \`npm run dev\`.\n`, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
-  let file = join(DIST, decodeURIComponent(pathname));
-  if (!file.startsWith(DIST)) return new Response('forbidden', { status: 403 });
+  let decoded: string;
+  try { decoded = decodeURIComponent(pathname); } catch { return new Response('bad request', { status: 400 }); }
+  let file = resolve(DIST, '.' + decoded);
+  if (file !== DIST && !file.startsWith(DIST + sep)) return new Response('forbidden', { status: 403 });
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(DIST, 'index.html');
   const type = MIME[extname(file).toLowerCase()] ?? 'application/octet-stream';
   return new Response(Bun.file(file), { headers: { 'content-type': type, 'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=3600' } });
 }
 
-await ensureOpencode();
+try {
+  await ensureOpencode();
+} catch (e) {
+  console.error(`[bridge] ${e instanceof Error ? e.message : e}`);
+  process.exit(1);
+}
 
-const server = Bun.serve({
+let server: ReturnType<typeof Bun.serve>;
+try {
+server = Bun.serve({
   port: BRIDGE_PORT,
   hostname: '0.0.0.0',
   idleTimeout: 255, // SSE /event stays open; Bun's max
@@ -140,9 +168,16 @@ const server = Bun.serve({
     return serveStatic(url.pathname);
   },
 });
+} catch (e) {
+  console.error(`[bridge] cannot listen on port ${BRIDGE_PORT}: ${e instanceof Error ? e.message : e}\n         set BRIDGE_PORT=<free port> or stop the other process`);
+  killChild();
+  process.exit(1);
+}
 
 console.log(`[bridge] Bun ${Bun.version} · listening on http://localhost:${server.port}  (model ${MODEL}, workspace ${WORKSPACE})`);
 
-const shutdown = () => { console.log('\n[bridge] shutting down'); try { child?.kill(); } catch { /* ignore */ } process.exit(0); };
+const shutdown = () => { console.log('\n[bridge] shutting down'); killChild(); process.exit(0); };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+if (IS_WIN) process.on('SIGBREAK', shutdown);
+process.on('exit', killChild);

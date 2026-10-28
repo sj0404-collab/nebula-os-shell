@@ -27,7 +27,7 @@ export default function Taskbar() {
   const [showTray, setShowTray] = useState(false);
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 z-[10000] flex h-12 items-stretch bg-[#101010]/95 backdrop-blur-md border-t border-white/10">
+    <div className="absolute bottom-0 left-0 right-0 z-[10000] flex h-12 items-stretch bg-[#101010]/95 backdrop-blur-md border-t border-white/10" data-taskbar>
       {/* Start button */}
       <button
         className={`group flex w-12 items-center justify-center transition-colors ${startOpen ? 'bg-[#0078d7]' : 'hover:bg-white/10'}`}

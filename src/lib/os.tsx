@@ -136,17 +136,30 @@ export function OSProvider({ children }: { children: ReactNode }) {
       snipping:  { title: 'Snipping Tool',              icon: 'snipping',  size: { w: 560, h: 420 } },
     };
     const m = meta[app];
+    const multiInstance: AppId[] = ['terminal', 'notepad', 'explorer'];
     const n = (idCounter.current += 1);
     const offset = (n % 6) * 28;
-    setWindows(ws => [
-      ...ws,
-      {
-        id: `${app}-${n}`, app, title: title ?? m.title, icon: m.icon,
-        z: zCounter.current, minimized: false, maximized: false,
-        pos: { x: 120 + offset, y: 40 + offset },
-        size: size ?? m.size,
-      },
-    ]);
+    // fit the window into the current viewport (phones, small laptops, rotated tablets)
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 1080;
+    const wanted = size ?? m.size;
+    const fitted = { w: Math.min(wanted.w, Math.max(320, vw - 8)), h: Math.min(wanted.h, Math.max(240, vh - 56)) };
+    const pos = { x: Math.max(0, Math.min(120 + offset, vw - fitted.w - 4)), y: Math.max(0, Math.min(40 + offset, vh - fitted.h - 52)) };
+    const small = vw < 640;
+    setWindows(ws => {
+      if (!multiInstance.includes(app) && !title) {
+        const existing = ws.find(w => w.app === app);
+        if (existing) return ws.map(w => (w.id === existing.id ? { ...w, z: zCounter.current, minimized: false } : w));
+      }
+      return [
+        ...ws,
+        {
+          id: `${app}-${n}`, app, title: title ?? m.title, icon: m.icon,
+          z: zCounter.current, minimized: false, maximized: small,
+          pos, size: fitted,
+        },
+      ];
+    });
   }, []);
 
   const closeWindow = useCallback((id: string) => setWindows(ws => ws.filter(w => w.id !== id)), []);
