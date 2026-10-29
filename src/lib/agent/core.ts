@@ -249,6 +249,15 @@ export function toolTitle(name: string, input: Record<string, unknown>): string 
 
 export function resolvePath(host: ToolHost, p: string): string {
   if (!p) return host.cwd;
+  const win = /^[a-zA-Z]:[\\/]/.test(p) || /^[a-zA-Z]:[\\/]/.test(host.cwd) || p.startsWith('\\\\');
+  if (win) {
+    const abs = /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\') ? p : `${host.cwd}\\${p}`;
+    const m = abs.match(/^([a-zA-Z]:|\\\\[^\\/]+\\[^\\/]+)?(.*)$/)!;
+    const root = m[1] ?? '', rest = m[2];
+    const parts: string[] = [];
+    for (const seg of rest.split(/[\\/]/)) { if (!seg || seg === '.') continue; if (seg === '..') parts.pop(); else parts.push(seg); }
+    return root + '\\' + parts.join('\\');
+  }
   if (p.startsWith('/')) return normalize(p);
   return normalize(`${host.cwd}/${p}`);
 }
@@ -259,6 +268,11 @@ function normalize(p: string): string {
     if (seg === '..') parts.pop(); else parts.push(seg);
   }
   return '/' + parts.join('/');
+}
+/** join a directory and an entry name with the directory's own separator style */
+function joinPath(dir: string, name: string): string {
+  if (/^[a-zA-Z]:/.test(dir) || dir.includes('\\')) return dir.replace(/[\\/]+$/, '') + '\\' + name;
+  return `${dir === '/' ? '' : dir}/${name}`;
 }
 
 /** glob matcher supporting **, *, ?, {a,b} */
@@ -282,7 +296,7 @@ async function walk(host: ToolHost, dir: string, out: string[], depth = 0): Prom
   try { entries = await host.list(dir); } catch { return; }
   for (const e of entries) {
     if (e.name === 'node_modules' || e.name === '.git') continue;
-    const full = `${dir === '/' ? '' : dir}/${e.name}`;
+    const full = joinPath(dir, e.name);
     if (e.dir) await walk(host, full, out, depth + 1); else out.push(full);
   }
 }
@@ -318,7 +332,7 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
       const files: string[] = [];
       await walk(host, root, files);
       const re = globToRegExp(str(input.pattern, '**/*'));
-      const rel = files.filter(f => { const r = f.startsWith(root + '/') ? f.slice(root.length + 1) : f; return re.test(r) || re.test(f); });
+      const rel = files.filter(f => { const n = f.replace(/\\/g, '/'), r0 = root.replace(/\\/g, '/'); const r = n.startsWith(r0 + '/') ? n.slice(r0.length + 1) : n; return re.test(r) || re.test(n); });
       return rel.length ? rel.slice(0, 100).join('\n') + (rel.length > 100 ? '\n(Results are truncated)' : '') : 'No files found';
     }
     case 'grep': {

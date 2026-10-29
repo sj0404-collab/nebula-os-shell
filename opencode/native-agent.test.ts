@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, stat
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { platform } from 'node:os';
-import { runAgent, fetchTransport, buildSystemPrompt, toolDefinitions, globToRegExp, parseSseLine, type ToolHost, type AgentEvent } from '../src/lib/agent/core';
+import { runAgent, fetchTransport, buildSystemPrompt, toolDefinitions, globToRegExp, parseSseLine, resolvePath, type ToolHost, type AgentEvent } from '../src/lib/agent/core';
 
 function bunHost(cwd: string): ToolHost {
   return {
@@ -36,6 +36,15 @@ test('prompt + tool catalogue match the opencode CLI shape', () => {
   expect(toolDefinitions().map(t => t.function.name)).toEqual(['bash', 'edit', 'glob', 'grep', 'read', 'skill', 'task', 'todowrite', 'webfetch', 'websearch', 'write']);
 });
 
+test('resolvePath: posix + windows hosts', () => {
+  const posix = { cwd: '/data/ws' } as ToolHost, win = { cwd: 'C:\\Users\\me\\ws' } as ToolHost;
+  expect(resolvePath(posix, 'a/../b.txt')).toBe('/data/ws/b.txt');
+  expect(resolvePath(posix, '/abs/x')).toBe('/abs/x');
+  expect(resolvePath(win, 'hello.txt')).toBe('C:\\Users\\me\\ws\\hello.txt');
+  expect(resolvePath(win, 'C:/Users/me/ws/sub/../h.txt')).toBe('C:\\Users\\me\\ws\\h.txt');
+  expect(resolvePath(win, 'D:\\x\\y.txt')).toBe('D:\\x\\y.txt');
+});
+
 test('sse + glob helpers', () => {
   expect(parseSseLine('data: {"choices":[{"delta":{"content":"hi"}}]}')).toEqual({ content: 'hi' });
   expect(parseSseLine('data: [DONE]')).toBeNull();
@@ -55,6 +64,8 @@ test('native loop: real zen model runs bash + write tools on the device', async 
   if (err && /429|FreeUsageLimit|HTTP 0/.test(err.message)) { console.warn('zen unavailable:', err.message); return; }
   expect(err).toBeUndefined();
   const tools = events.filter(e => e.type === 'part' && e.part.type === 'tool' && e.part.state?.status === 'completed').map(e => (e as Extract<AgentEvent, { type: 'part' }>).part.tool);
+  const toolLog = events.filter(e => e.type === 'part' && e.part.type === 'tool').map(e => { const p = (e as Extract<AgentEvent, { type: 'part' }>).part; return `${p.tool} ${p.state?.status} ${JSON.stringify(p.state?.input)} → ${(p.state?.output ?? '').slice(0, 120)}`; });
+  console.log(toolLog.join('\n'));
   expect(tools.length).toBeGreaterThan(0);
   expect(tools).toContain('bash');
   // the model may create the file with the write tool or via the shell — either way it must exist on disk
