@@ -1,5 +1,5 @@
 // Memory64 WASM host — loads the real wasm64 build of Nebula Strike,
-// runs it under WebGL-accelerated canvas at 60 FPS fixed timestep.
+// steps it at a fixed 60 Hz and exposes its 64-bit linear memory to the WebGL renderer (src/lib/webgl.ts).
 export interface Memory64Info {
   supported: boolean;
   moduleBytes: number;
@@ -62,6 +62,22 @@ export class NebulaWasm64 {
       frames: Number(this.ex?.nebula_auto_frames() ?? 0),
       lives: Number(this.ex?.nebula_auto_lives() ?? 0),
       win: Boolean(this.ex?.nebula_auto_win()),
+    };
+  }
+  /**
+   * Zero-copy view of the entity arrays inside the 64-bit linear memory (Float32/Int32 views + byte offsets).
+   * The WebGL renderer reads positions straight from here every frame.
+   */
+  views(): { f32: Float32Array; i32: Int32Array; stars: number; starsN: number; bolts: number; boltsN: number; enemies: number; enemiesN: number; parts: number; partsN: number; strides: { star: number; bolt: number; enemy: number; part: number } } | null {
+    const mem = (this.instance?.exports as Record<string, unknown> | undefined)?.memory as WebAssembly.Memory | undefined;
+    if (!mem || !this.ex) return null;
+    return {
+      f32: new Float32Array(mem.buffer), i32: new Int32Array(mem.buffer),
+      stars: Number(this.ex.nebula_stars_ptr() as bigint), starsN: Number(this.ex.nebula_stars_count()),
+      bolts: Number(this.ex.nebula_bolts_ptr() as bigint), boltsN: Number(this.ex.nebula_bolts_count()),
+      enemies: Number(this.ex.nebula_enemies_ptr() as bigint), enemiesN: Number(this.ex.nebula_enemies_count()),
+      parts: Number(this.ex.nebula_parts_ptr() as bigint), partsN: Number(this.ex.nebula_parts_count()),
+      strides: { star: STAR_STRIDE, bolt: BOLT_STRIDE, enemy: ENEMY_STRIDE, part: PART_STRIDE },
     };
   }
   state() {

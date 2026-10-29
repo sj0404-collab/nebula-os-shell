@@ -2,14 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOS } from '../../lib/os';
 import { bigPickleScript, bigPickleAnswer, type AgentMessage } from '../../lib/agent';
 import { AppIcon } from '../icons';
-import { Terminal, Trash2, SendHorizonal, ChevronRight, Circle, CheckCircle2, Square, Wifi, WifiOff, Settings2 } from 'lucide-react';
-import { apiBase, getBridgeUrl, setBridgeUrl, isNativeApp } from '../../lib/bridge';
+import { Terminal, Trash2, SendHorizonal, ChevronRight, Circle, CheckCircle2, Square, Wifi, WifiOff, Settings2, Smartphone } from 'lucide-react';
+import { apiBase, getBridgeUrl, setBridgeUrl, isNativeApp, getAgentMode, setAgentMode, getZenKey, setZenKey, type AgentMode } from '../../lib/bridge';
+import { runAgent, DEFAULT_MODEL, type ChatMessage, type ToolHost, type Transport, type AgentEvent } from '../../lib/agent/core';
+import { androidHost, androidTransport, browserHost, proxyTransport, resetBrowserVfs, type NativeInfo } from '../../lib/agent/hosts';
 
 /**
  * opencode TUI.
+ *  - NATIVE mode: the opencode agent loop runs inside the app itself (src/lib/agent/core.ts) — the same prompt,
+ *    tools and Zen protocol as the opencode CLI. On Android the tools are the real shell + files of the phone
+ *    (NebulaNative plugin) and the model is called straight from the device: no PC, no bridge.
+ *    In a browser the same loop works on an in-browser workspace; the model goes through the bridge's /zen pass-through.
  *  - REAL mode: talks to the real opencode server through the Bun bridge (opencode/bridge.ts → /api/opencode/*):
  *    sessions, prompt_async, SSE /event (text deltas, tool calls, step tokens). Model: opencode/big-pickle (free).
- *  - DEMO mode (bridge not running): the scripted Big Pickle showcase from lib/agent.ts.
+ *  - DEMO mode (nothing available): the scripted Big Pickle showcase from lib/agent.ts.
  */
 
 
@@ -48,7 +54,9 @@ function toolSummary(p: OcPart): { first: string; rest: string } {
 
 export default function OpencodeApp() {
   const { openApp, pushToast } = useOS();
-  const [mode, setMode] = useState<'probing' | 'real' | 'demo'>('probing');
+  const [mode, setMode] = useState<'probing' | 'real' | 'native' | 'demo'>('probing');
+  const [agentMode, setAgentModeState] = useState<AgentMode>(getAgentMode());
+  const [zenKey, setZenKeyState] = useState(getZenKey());
   const [API, setAPI] = useState(apiBase());           // same-origin proxy or a remote bridge (Android / static hosting)
   const [showCfg, setShowCfg] = useState(false);
   const [cfgUrl, setCfgUrl] = useState(getBridgeUrl());
@@ -74,29 +82,58 @@ export default function OpencodeApp() {
   const esRef = useRef<EventSource | null>(null);
   const sessionRef = useRef<string | null>(null);
 
+  // ---------- native state ----------
+  const nativeRef = useRef<{ host: ToolHost; transport: Transport; info: NativeInfo | null; history: ChatMessage[]; todos: { content: string; status: string; priority?: string }[]; abort: AbortController | null } | null>(null);
+  const [nativeInfo, setNativeInfo] = useState<NativeInfo | null>(null);
+  const [nativeWorkspace, setNativeWorkspace] = useState('');
+
   const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
   // ===== probe the bridge =====
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const pref = agentMode;
+      // 1) Android app (or explicit choice): the agent runs on the device itself
+      if (isNativeApp() && pref !== 'bridge') {
+        try {
+          const { host, info } = await androidHost();
+          if (cancelled) return;
+          nativeRef.current = { host, transport: androidTransport, info, history: [], todos: [], abort: null };
+          setNativeInfo(info); setNativeWorkspace(host.cwd); setOcMessages([]); setTouched([]); setTokens(0); setRealError(null);
+          setMode('native'); return;
+        } catch (e) { console.warn('native plugin unavailable', e); }
+      }
+      // 2) bridge on the PC / same origin
+      let bridgeInfo: BridgeInfo | null = null;
       try {
         const r = await fetch(`${API}/bridge`, { signal: AbortSignal.timeout(3500) });
         const j = (await r.json()) as BridgeInfo;
-        if (!cancelled && r.ok && j.ok) { setBridge(j); setMode('real'); return; }
+        if (r.ok && j.ok) bridgeInfo = j;
       } catch { /* bridge not running */ }
-      if (!cancelled) setMode('demo');
+      if (cancelled) return;
+      if (bridgeInfo && pref === 'native') {
+        // in-browser native loop; the bridge only forwards HTTPS to opencode.ai (no opencode server involved)
+        const host = browserHost();
+        nativeRef.current = { host, transport: proxyTransport(API), info: null, history: [], todos: [], abort: null };
+        setBridge(bridgeInfo); setNativeInfo(null); setNativeWorkspace(host.cwd); setOcMessages([]); setTouched([]); setTokens(0); setRealError(null);
+        setMode('native'); return;
+      }
+      if (bridgeInfo) { setBridge(bridgeInfo); setMode('real'); return; }
+      setMode('demo');
     })();
     return () => { cancelled = true; };
-  }, [API]);
+  }, [API, agentMode]);
 
   const applyBridgeUrl = () => {
     setBridgeUrl(cfgUrl);
+    setZenKey(zenKey);
     setShowCfg(false);
     startedRef.current = false;
     setMode('probing');
     setAPI(apiBase());
   };
+  const chooseAgentMode = (m: AgentMode) => { setAgentMode(m); setAgentModeState(m); startedRef.current = false; setMode('probing'); };
 
   // ===== REAL: create session + subscribe to events =====
   const upsertPart = useCallback((part: OcPart) => {
@@ -115,6 +152,37 @@ export default function OpencodeApp() {
     // context size of the latest step (input + output + reasoning), like the real TUI footer
     if (part.type === 'step-finish' && part.tokens?.total) setTokens(part.tokens.total);
   }, []);
+
+  // ===== NATIVE: run the agent loop in-process =====
+  const onAgentEvent = useCallback((e: AgentEvent) => {
+    if (e.type === 'message') {
+      setOcMessages(prev => (prev.some(m => m.id === e.id) ? prev : [...prev, { id: e.id, role: e.role, parts: [], modelID: DEFAULT_MODEL }]));
+    } else if (e.type === 'part') {
+      upsertPart({ ...e.part, messageID: e.messageID, sessionID: 'native' } as OcPart);
+    } else if (e.type === 'status') {
+      setBusy(e.busy);
+    } else if (e.type === 'error') {
+      setRealError(e.message);
+    }
+  }, [upsertPart]);
+
+  const sendNative = async (text: string) => {
+    const n = nativeRef.current;
+    if (!n) return;
+    setRealError(null); setBusy(true);
+    n.abort = new AbortController();
+    try {
+      n.history = await runAgent(text, { host: n.host, transport: n.transport, apiKey: zenKey || undefined, history: n.history, todos: n.todos, signal: n.abort.signal, onEvent: onAgentEvent });
+    } catch (e) {
+      setRealError(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); n.abort = null; }
+  };
+  const abortNative = () => { nativeRef.current?.abort?.abort(); };
+  const resetNative = () => {
+    abortNative();
+    const n = nativeRef.current; if (n) { n.history = []; n.todos = []; }
+    setOcMessages([]); setTouched([]); setTokens(0); setRealError(null);
+  };
 
   const startRealSession = useCallback(async () => {
     setRealError(null); setOcMessages([]); setTouched([]); setTokens(0);
@@ -244,6 +312,7 @@ export default function OpencodeApp() {
     if (!q || busy) return;
     setInput('');
     if (mode === 'real') { await sendReal(q); return; }
+    if (mode === 'native') { await sendNative(q); return; }
     setMessages(prev => [...prev, { id: Date.now(), role: 'user', content: q, time: Date.now() }]);
     setBusy(true);
     await sleep(280);
@@ -254,6 +323,7 @@ export default function OpencodeApp() {
 
   const clear = () => {
     if (mode === 'real') { abortReal(); void startRealSession(); return; }
+    if (mode === 'native') { resetNative(); return; }
     setMessages([{ id: Date.now(), role: 'system', content: 'opencode (demo) · model: big-pickle · bridge offline\nЗапустите `npm run opencode` (bun run opencode/bridge.ts) — на телефоне/Android укажите адрес моста через ⚙.\nЗадай вопрос: fps / exe / steam / тест / source — или: /build <что построить>', time: Date.now() }]);
   };
 
@@ -289,9 +359,11 @@ export default function OpencodeApp() {
     return null;
   };
 
-  const modelLabel = mode === 'real' ? (bridge?.model ?? 'opencode/big-pickle') : 'big-pickle (demo)';
-  const workspaceLabel = mode === 'real' ? (bridge?.workspace ?? '').split(/[\\/]/).filter(Boolean).slice(-2).join('/') || 'workspace' : 'C:\\dev\\game';
-  const sidebarFiles = mode === 'real' ? touched : FILES_LIST;
+  const modelLabel = mode === 'real' ? (bridge?.model ?? 'opencode/big-pickle') : mode === 'native' ? `opencode/${DEFAULT_MODEL}` : 'big-pickle (demo)';
+  const workspaceLabel = mode === 'real' ? (bridge?.workspace ?? '').split(/[\\/]/).filter(Boolean).slice(-2).join('/') || 'workspace'
+    : mode === 'native' ? nativeWorkspace.split('/').filter(Boolean).slice(-2).join('/') || 'workspace' : 'C:\\dev\\game';
+  const sidebarFiles = mode === 'real' || mode === 'native' ? touched : FILES_LIST;
+  const live = mode === 'real' || mode === 'native';
 
   return (
     <div className="flex h-full flex-col bg-[#111318] text-[#d6dae2] font-mono text-[11px]">
@@ -305,12 +377,15 @@ export default function OpencodeApp() {
         <div className="ml-auto flex items-center gap-2">
           {mode === 'real' ? (
             <span className="flex items-center gap-1 text-[9px] text-[#3dd68c]" title={`opencode v${bridge?.opencode} · Bun ${bridge?.bun}`}><Wifi size={11} />live · v{bridge?.opencode}</span>
+          ) : mode === 'native' ? (
+            <span className="flex items-center gap-1 text-[9px] text-[#59f2ff]" data-native-mode={nativeInfo ? 'android' : 'browser'} title={nativeInfo ? `on-device agent · Android ${nativeInfo.release} (${nativeInfo.abi}) · WebView ${nativeInfo.webview ?? '?'} · ${nativeInfo.workspace}` : 'in-browser agent · zen via bridge pass-through'}><Smartphone size={11} />native · {nativeInfo ? 'on-device' : 'in-browser'}</span>
           ) : mode === 'demo' ? (
             <span className="flex items-center gap-1 text-[9px] text-[#ffd166]" title="run: bun run opencode/bridge.ts"><WifiOff size={11} />demo · bridge offline</span>
           ) : (
             <span className="text-[9px] text-[#8a8f9c]">connecting…</span>
           )}
           {mode === 'real' && busy && <button onClick={abortReal} title="Abort" className="rounded p-1 text-[#ff6b6b] hover:bg-white/10"><Square size={12} /></button>}
+          {mode === 'native' && busy && <button onClick={abortNative} title="Abort" className="rounded p-1 text-[#ff6b6b] hover:bg-white/10"><Square size={12} /></button>}
           <button onClick={() => setShowCfg(v => !v)} title="Bridge URL (Android / remote PC)" aria-label="Bridge settings" className={`rounded p-1 hover:bg-white/10 ${getBridgeUrl() ? 'text-[#3dd68c]' : ''}`}><Settings2 size={13} /></button>
           <button onClick={clear} title="New session" className="rounded p-1 hover:bg-white/10"><Trash2 size={13} /></button>
         </div>
@@ -321,18 +396,28 @@ export default function OpencodeApp() {
           <input value={cfgUrl} onChange={e => setCfgUrl(e.target.value)} placeholder={isNativeApp() ? 'http://192.168.1.10:8787  (PC running: npm run opencode)' : 'empty = same origin (/api/opencode)'} className="min-w-[220px] flex-1 rounded border border-white/10 bg-black/40 px-2 py-1 text-[#e8f4ff] outline-none focus:border-[#3dd68c]/60" spellCheck={false} />
           <button type="submit" className="rounded border border-[#3dd68c]/50 bg-[#3dd68c]/15 px-2 py-1 font-bold text-[#3dd68c]">connect</button>
           <button type="button" onClick={() => { setCfgUrl(''); setBridgeUrl(''); setShowCfg(false); startedRef.current = false; setMode('probing'); setAPI(apiBase()); }} className="rounded border border-white/10 px-2 py-1 text-[#8a8f9c]">reset</button>
-          <span className="basis-full text-[#555b68]">{isNativeApp() ? 'В Android‑приложении мост запускается на компьютере в той же Wi‑Fi сети: `npm run opencode` → укажите http://IP‑компьютера:8787' : 'Пусто — тот же сервер (vite/мост). Для телефона откройте http://IP‑компьютера:8787 или укажите его здесь.'}</span>
+          <span className="basis-full text-[#555b68]">{isNativeApp() ? 'Мост нужен только в режиме «bridge» (opencode на ПК). В режиме «native» агент работает прямо на телефоне.' : 'Пусто — тот же сервер (vite/мост). Для телефона откройте http://IP‑компьютера:8787 или укажите его здесь.'}</span>
+          <span className="text-[#8a8f9c]">agent</span>
+          <div className="flex overflow-hidden rounded border border-white/10" role="radiogroup" data-agent-mode={agentMode}>
+            {(['auto', 'native', 'bridge'] as AgentMode[]).map(m => (
+              <button key={m} type="button" role="radio" aria-checked={agentMode === m} onClick={() => chooseAgentMode(m)} className={`px-2 py-1 ${agentMode === m ? 'bg-[#59f2ff]/20 text-[#59f2ff]' : 'text-[#8a8f9c] hover:bg-white/5'}`}>{m === 'native' ? 'native (on device)' : m === 'bridge' ? 'bridge (PC)' : 'auto'}</button>
+            ))}
+          </div>
+          <span className="text-[#8a8f9c]">zen key</span>
+          <input value={zenKey} onChange={e => setZenKeyState(e.target.value)} placeholder="optional — empty = free tier (Bearer public)" type="password" className="min-w-[200px] flex-1 rounded border border-white/10 bg-black/40 px-2 py-1 text-[#e8f4ff] outline-none focus:border-[#3dd68c]/60" spellCheck={false} data-zen-key />
+          {!isNativeApp() && <button type="button" onClick={() => { resetBrowserVfs(); resetNative(); pushToast('opencode', 'in-browser workspace reset', 'opencode'); }} className="rounded border border-white/10 px-2 py-1 text-[#8a8f9c]">reset browser workspace</button>}
+          <span className="basis-full text-[#555b68]">native = цикл агента opencode выполняется внутри приложения: на Android — настоящий shell и файлы телефона, модель вызывается с устройства напрямую; в браузере — рабочая папка в localStorage, модель через /zen мост.</span>
         </form>
       )}
 
       <div className="flex min-h-0 flex-1">
         {/* file tree */}
         <div className="hidden w-44 shrink-0 flex-col border-r border-white/5 bg-[#14161b] sm:flex">
-          <div className="px-3 pt-2 pb-1 text-[9px] tracking-widest text-[#555b68]">{mode === 'real' ? 'FILES TOUCHED' : 'PROJECT — GAME'}</div>
+          <div className="px-3 pt-2 pb-1 text-[9px] tracking-widest text-[#555b68]">{live ? 'FILES TOUCHED' : 'PROJECT — GAME'}</div>
           <div className="flex-1 overflow-y-auto px-1.5 pb-2">
             {sidebarFiles.length === 0 && <div className="px-1.5 text-[10px] text-[#555b68]">— none yet —</div>}
             {sidebarFiles.map(f => {
-              const active = mode === 'real' ? true : files.includes(f);
+              const active = live ? true : files.includes(f);
               const name = f.split(/[\\/]/).pop()!;
               return (
                 <div key={f} title={f} className={`flex items-center gap-1.5 rounded px-1.5 py-[3px] text-[10px] ${active ? 'text-[#3dd68c]' : 'text-[#7d8290]'}`}>
@@ -347,6 +432,7 @@ export default function OpencodeApp() {
             <div>build: zig cc 0.17</div>
             <div>targets: win64 · wasm64 · wasm32</div>
             {mode === 'real' && <div className="text-[#3dd68c]/70">bridge: bun {bridge?.bun}</div>}
+            {mode === 'native' && <div className="text-[#59f2ff]/70">{nativeInfo ? `android ${nativeInfo.release} · ${nativeInfo.abi}` : 'browser vfs · zen pass-through'}</div>}
           </div>
         </div>
 
@@ -354,11 +440,18 @@ export default function OpencodeApp() {
         <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto px-4 py-3 leading-[1.5]">
           {mode === 'probing' && <div className="text-[#555b68]">connecting to opencode bridge…</div>}
 
-          {mode === 'real' && (
+          {live && (
             <>
-              {ocMessages.length === 0 && (
+              {ocMessages.length === 0 && mode === 'real' && (
                 <div className="whitespace-pre-wrap rounded border border-white/5 bg-white/[0.02] p-2 text-[#8a8f9c]">
                   {`opencode v${bridge?.opencode} · real session ${sessionId ? sessionId.slice(0, 16) + '…' : '…'}\nmodel ${modelLabel} · workspace ${bridge?.workspace}\nThis is the real agent: it can read, edit and run things inside the workspace.\nTry: «What does game/nebula_core.inc do?» · «Run the wasm32 autotest with node» · «Add a pause key (P) to nebula_core.inc»`}
+                </div>
+              )}
+              {ocMessages.length === 0 && mode === 'native' && (
+                <div className="whitespace-pre-wrap rounded border border-white/5 bg-white/[0.02] p-2 text-[#8a8f9c]" data-native-welcome>
+                  {nativeInfo
+                    ? `opencode native · agent runs on this phone (Android ${nativeInfo.release}, ${nativeInfo.abi}, WebView ${nativeInfo.webview ?? '?'})\nmodel ${modelLabel} (OpenCode Zen, free) · workspace ${nativeInfo.workspace}\nTools: bash (/system/bin/sh), read, write, edit, glob, grep, webfetch — all executed on the device, no PC bridge.\nTry: «Run uname -a and df -h» · «Create hello.sh that prints the date and run it» · «List the workspace»`
+                    : `opencode native · agent loop runs inside this browser tab\nmodel ${modelLabel} (OpenCode Zen via bridge /zen pass-through) · workspace ${nativeWorkspace} (localStorage)\nTools: read, write, edit, glob, grep, webfetch (no shell in a browser — use the Android app for bash).\nTry: «What is in README.md?» · «Create todo.md with three tasks»`}
                 </div>
               )}
               {ocMessages.map(m => (
@@ -414,7 +507,7 @@ export default function OpencodeApp() {
           value={input}
           onChange={e => setInput(e.target.value)}
           disabled={busy || mode === 'probing'}
-          placeholder={busy ? 'big pickle is working…' : mode === 'real' ? `message ${modelLabel} — real agent in ${workspaceLabel}` : 'message big-pickle (demo) — try: fps / steam / exe / тест / source'}
+          placeholder={busy ? 'big pickle is working…' : mode === 'real' ? `message ${modelLabel} — real agent in ${workspaceLabel}` : mode === 'native' ? `message ${modelLabel} — native agent in ${workspaceLabel}` : 'message big-pickle (demo) — try: fps / steam / exe / тест / source'}
           className="w-full bg-transparent outline-none placeholder-[#4a4f5c] text-[#e8f4ff] caret-[#3dd68c]"
           spellCheck={false}
           autoComplete="off"
@@ -428,6 +521,13 @@ export default function OpencodeApp() {
             <span>session: {sessionId ? sessionId.slice(4, 14) : '—'}</span>
             <span>tokens: {tokens.toLocaleString()}</span>
             <span className="ml-auto text-[#3dd68c]">bridge /api/opencode → opencode serve</span>
+          </>
+        ) : mode === 'native' ? (
+          <>
+            <span>model: <span className="text-[#3dd68c]">{modelLabel}</span> ({zenKey ? 'zen · your key' : 'opencode zen · free'})</span>
+            <span>tokens: {tokens.toLocaleString()}</span>
+            <span className="truncate">ws: {nativeWorkspace}</span>
+            <span className="ml-auto text-[#59f2ff]">{nativeInfo ? 'native agent · device → opencode.ai' : 'native agent · browser → bridge /zen → opencode.ai'}</span>
           </>
         ) : (
           <>

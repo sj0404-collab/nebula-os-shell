@@ -38,10 +38,13 @@ jobs:
       - name: Bridge integration test (bun test → real agent answer over SSE)
         run: bun test opencode/bridge.test.ts
         timeout-minutes: 8
+      - name: Native agent loop (in-app opencode protocol → real Zen model, real shell + files)
+        run: bun test opencode/native-agent.test.ts
+        timeout-minutes: 5
 
       - name: Playwright chromium
         run: npx playwright install --with-deps chromium
-      - name: Desktop e2e (15 scenarios, incl. LIVE opencode window)
+      - name: Desktop e2e (21 scenarios, incl. LIVE + NATIVE opencode and WebGL)
         run: node e2e/with-bridge.mjs
         timeout-minutes: 15
 

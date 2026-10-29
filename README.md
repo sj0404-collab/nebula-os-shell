@@ -38,10 +38,31 @@ Scripts
 |---|---|
 | **Web** (any modern browser, desktop/mobile) | `npm run dev` / `npm run preview` / the bridge itself serves `dist/` on :8787 |
 | **PWA** (installable on Android, iOS, ChromeOS, Windows, macOS) | open the site → "Install app" / "Add to Home screen"; offline shell, `/api` never cached |
-| **Android APK** (Capacitor) | CI builds a signed `NebulaOS-vX.Y.Z-android.apk` (Releases). Bridge runs on a PC in the same Wi‑Fi: `npm run opencode`, then in the opencode window press ⚙ and enter `http://<pc-ip>:8787` |
+| **Android APK** (Capacitor) | CI builds a signed `NebulaOS-vX.Y.Z-android.apk` (Releases). **No PC needed**: the opencode agent runs natively on the phone (see below). A PC bridge is optional (⚙ → mode `bridge`, `http://<pc-ip>:8787`) |
 | **Windows / macOS / Linux** | `npm run opencode` or the single‑file `opencode-bridge-*` binary from Releases (serves the desktop + real agent) |
 
 Touch devices get on‑screen controls in Nebula Strike (◀ ▶ FIRE), pointer‑event window dragging and maximized windows under 640 px.
+
+### Native opencode agent (no bridge, no PC)
+
+`src/lib/agent/core.ts` is an in‑app implementation of the opencode agent loop: the same system prompt, tool catalogue
+(`bash edit glob grep read write webfetch todowrite task …`), request/session identifiers and SSE protocol as the opencode
+CLI 1.19.5, talking to the free **OpenCode Zen** endpoint (`opencode/big-pickle`, `Bearer public`; your own key can be
+entered in ⚙). The loop is platform‑agnostic — only the *host* differs:
+
+| Build | Model transport | Tools |
+|---|---|---|
+| **Android APK** | `NebulaNativePlugin.httpStream` — streaming HTTPS from Java, straight from the phone | real `/system/bin/sh`, real files in `Android/data/com.bigpickle.nebulaos/files/workspace`, `webfetch` |
+| **Web / PWA** | bridge pass‑through `/api/opencode/zen/*` (browsers cannot call opencode.ai directly: no CORS, forbidden `User-Agent`) | in‑browser workspace (localStorage), file tools + `webfetch` |
+| **CI / Bun** (`opencode/native-agent.test.ts`) | `fetch` | Bun shell + fs |
+
+Mode is chosen in the opencode window (⚙): `auto` (native in the APK, bridge on the web), `native`, `bridge`.
+
+### WebGL renderer
+Nebula Strike is drawn by `src/lib/webgl.ts` (WebGL2, WebGL1 fallback, Canvas 2D only if the GPU is unavailable):
+procedural nebula background shader, one dynamic VBO for solid geometry, an additive glow pass and a HUD texture.
+With the wasm64 core the vertex data is read **directly from the module's 64‑bit linear memory** (`NebulaWasm64.views()`),
+no per‑entity JS objects. The badge in the window shows `WASM64 · MEMORY64 · WEBGL2` and the GPU string.
 
 ### Android build locally
 ```bash
@@ -54,7 +75,7 @@ cd android && ./gradlew assembleRelease      # android/app/build/outputs/apk/rel
 
 * Runs on **Windows, macOS and Linux**: the bridge finds `opencode` in PATH, `~/.bun/bin`, `node_modules/.bin`,
   `%APPDATA%\npm`, `/opt/homebrew/bin`, wraps `.cmd` shims on Windows and falls back to `bunx opencode-ai`.
-* CI (`.github/workflows/ci.yml`) runs lint → typecheck → build → bun bridge test (real model) → Playwright e2e
+* CI (`.github/workflows/ci.yml`) runs lint → typecheck → build → bun bridge test (real model) → native agent loop test (real model) → Playwright e2e
   on **ubuntu‑latest, windows‑latest and macos‑latest**, then builds single‑file bridge executables for all
   platforms; a `v*` tag publishes them (with `dist/`) as a GitHub Release.
 * The desktop works with mouse, touch and pen (pointer events), fits phone screens (windows open maximized

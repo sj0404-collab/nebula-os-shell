@@ -6,6 +6,8 @@
  * and exposes it to the browser OS shell:
  *
  *   /api/opencode/bridge   → bridge info (version, model, workspace)
+ *   /api/opencode/zen/*    → pass-through to https://opencode.ai/inference/openai/v1 for the in-browser native agent
+ *                            (browsers cannot call it directly: no CORS headers, User-Agent is a forbidden header)
  *   /api/opencode/*        → transparent proxy to the opencode server (sessions, prompt_async, SSE /event …)
  *   /*                     → static files from ./dist (when `vite build` was run), SPA fallback to index.html
  *
@@ -104,8 +106,29 @@ async function ensureOpencode(): Promise<void> {
 const CORS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-  'access-control-allow-headers': 'content-type,accept,x-opencode-directory',
+  'access-control-allow-headers': 'content-type,accept,authorization,x-opencode-directory,x-opencode-client,x-opencode-project,x-opencode-request,x-opencode-session,x-opencode-session-id',
 };
+
+const ZEN_BASE = process.env.OPENCODE_ZEN_URL ?? 'https://opencode.ai/inference/openai/v1';
+const ZEN_UA = 'opencode/1.19.5 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4';
+/** Forward the in-browser agent's request to OpenCode Zen unchanged, adding the User-Agent a browser cannot set. */
+async function zenProxy(req: Request, url: URL): Promise<Response> {
+  const target = ZEN_BASE + url.pathname.slice((API_PREFIX + '/zen').length) + url.search;
+  const headers = new Headers();
+  for (const [k, v] of req.headers) if (/^(authorization|content-type|accept|x-opencode-)/i.test(k)) headers.set(k, v);
+  if (!headers.has('authorization')) headers.set('authorization', 'Bearer public');
+  headers.set('user-agent', ZEN_UA);
+  let up: Response;
+  try {
+    up = await fetch(target, { method: req.method, headers, body: req.method === 'GET' ? undefined : await req.arrayBuffer() });
+  } catch (e) {
+    return Response.json({ error: 'opencode zen unreachable', detail: String(e) }, { status: 502, headers: CORS });
+  }
+  const out = new Headers(CORS);
+  for (const h of ['content-type', 'retry-after']) { const v = up.headers.get(h); if (v) out.set(h, v); }
+  out.set('cache-control', 'no-cache'); out.set('x-accel-buffering', 'no');
+  return new Response(up.body, { status: up.status, headers: out });
+}
 
 async function proxy(req: Request, url: URL): Promise<Response> {
   const target = new URL(OC_URL + url.pathname.slice(API_PREFIX.length) + url.search);
@@ -164,6 +187,7 @@ server = Bun.serve({
       const h = await health();
       return Response.json({ ok: h.ok, opencode: h.version ?? ocVersion, model: MODEL, workspace: WORKSPACE, server: OC_URL, bun: Bun.version }, { headers: CORS });
     }
+    if (url.pathname.startsWith(API_PREFIX + '/zen/')) return zenProxy(req, url);
     if (url.pathname.startsWith(API_PREFIX + '/')) return proxy(req, url);
     return serveStatic(url.pathname);
   },

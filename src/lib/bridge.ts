@@ -22,3 +22,14 @@ export function apiBase(): string {
   const u = getBridgeUrl();
   return u ? `${u}/api/opencode` : '/api/opencode';
 }
+
+/** How the opencode window talks to the agent: on-device native loop, the PC bridge, or auto (native in the APK, bridge on the web). */
+export type AgentMode = 'auto' | 'native' | 'bridge';
+const MODE_KEY = 'nebula.agentMode', ZEN_KEY = 'nebula.zenKey';
+export function getAgentMode(): AgentMode {
+  try { const v = localStorage.getItem(MODE_KEY); return v === 'native' || v === 'bridge' ? v : 'auto'; } catch { return 'auto'; }
+}
+export function setAgentMode(m: AgentMode) { try { if (m === 'auto') localStorage.removeItem(MODE_KEY); else localStorage.setItem(MODE_KEY, m); } catch { /* private mode */ } }
+/** Optional OpenCode Zen API key (paid models / personal quota). Empty = free tier (`public`). */
+export function getZenKey(): string { try { return (localStorage.getItem(ZEN_KEY) ?? '').trim(); } catch { return ''; } }
+export function setZenKey(k: string) { try { const v = k.trim(); if (v) localStorage.setItem(ZEN_KEY, v); else localStorage.removeItem(ZEN_KEY); } catch { /* private mode */ } }

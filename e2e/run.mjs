@@ -184,8 +184,36 @@ await test('Nebula Strike: keyboard moves the ship and canvas renders', async ()
   await canvas.click();
   await page.keyboard.down('ArrowLeft'); await sleep(500); await page.keyboard.up('ArrowLeft');
   await page.keyboard.press('Space');
-  const nonBlack = await canvas.evaluate(c => { const g = c.getContext('2d'); if (!g) return -1; const d = g.getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 16) if (d[i] + d[i + 1] + d[i + 2] > 60) n++; return n; });
-  expect(nonBlack !== 0, 'canvas is blank');
+  const nonBlack = await canvas.evaluate(c => {
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    let d;
+    if (gl) { d = new Uint8Array(c.width * c.height * 4); gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, d); }
+    else { const g = c.getContext('2d'); if (!g) return -1; d = g.getImageData(0, 0, c.width, c.height).data; }
+    let n = 0; for (let i = 0; i < d.length; i += 16) if (d[i] + d[i + 1] + d[i + 2] > 60) n++; return n;
+  });
+  expect(nonBlack > 0, `canvas is blank (${nonBlack})`);
+  await closeAll();
+});
+
+await test('Nebula Strike: real WebGL renderer (WebGL2) draws the wasm64 scene', async () => {
+  await openFromDesktop('Nebula Strike');
+  const w = page.locator('[data-window="nebula"]');
+  const canvas = w.locator('canvas').first();
+  await page.waitForFunction(() => document.querySelector('[data-window="nebula"] canvas')?.getAttribute('data-engine') === 'wasm64', null, { timeout: 15_000 });
+  const renderer = await canvas.getAttribute('data-renderer');
+  expect(renderer === 'webgl2' || renderer === 'webgl', `renderer is ${renderer}, expected WebGL`);
+  expect(/WEBGL/.test(await w.innerText()), 'WebGL badge missing');
+  // the GPU frame must contain the cyan ship + HUD bar, i.e. many lit pixels in several colours
+  await sleep(400);
+  const stats = await canvas.evaluate(c => {
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    const d = new Uint8Array(c.width * c.height * 4); gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, d);
+    let lit = 0, cyan = 0; for (let i = 0; i < d.length; i += 4) { const r = d[i], g = d[i + 1], b = d[i + 2]; if (r + g + b > 90) lit++; if (b > 150 && g > 100 && r < 120) cyan++; }
+    return { lit, cyan, total: d.length / 4 };
+  });
+  expect(stats.lit > stats.total * 0.01, `too few lit pixels: ${JSON.stringify(stats)}`);
+  expect(stats.cyan > 100, `ship/bolts (cyan) not drawn: ${JSON.stringify(stats)}`);
+  await page.screenshot({ path: resolve(SHOTS, 'nebula-webgl.png') });
   await closeAll();
 });
 
@@ -220,9 +248,51 @@ if (bridgeUp || process.env.E2E_BRIDGE) {
     await page.screenshot({ path: resolve(SHOTS, 'opencode-live.png') });
     await closeAll();
   });
+
+  await test('opencode window: NATIVE mode — agent loop runs in the page, model via /zen, tool writes a file', async () => {
+    const c6 = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+    const p6 = await c6.newPage();
+    p6.on('pageerror', e => errors.push(`pageerror(native): ${e.message}`));
+    await p6.addInitScript(() => { localStorage.setItem('nebula.agentMode', 'native'); localStorage.removeItem('nebula.native.vfs'); });
+    await p6.goto(url, { waitUntil: 'load' });
+    await iconOf(p6, 'opencode').dblclick();
+    await p6.waitForSelector('[data-native-mode="browser"]', { timeout: 15_000 });
+    const oc = p6.locator('[data-window="opencode"]');
+    expect(/native agent/.test(await oc.innerText()), 'native welcome missing');
+    const input = oc.locator('input').last();
+    await input.fill('Use the write tool to create a file named todo.md whose content is exactly: NATIVE OK. Then reply with the single word: done');
+    await input.press('Enter');
+    await p6.waitForFunction(() => {
+      const t = document.querySelector('[data-window="opencode"]')?.textContent ?? '';
+      return /write/.test(t) && /completed/i.test(t) && !document.querySelector('input[placeholder*="working"]');
+    }, null, { timeout: 120_000 });
+    const txt = await oc.innerText();
+    expect(!/FreeUsageLimit|error:/i.test(txt), `agent error: ${txt.slice(0, 200)}`);
+    expect(/tokens/.test(txt), 'token counter missing');
+    const vfs = await p6.evaluate(() => JSON.parse(localStorage.getItem('nebula.native.vfs') ?? '{}'));
+    expect(typeof vfs['/workspace/todo.md'] === 'string' && /NATIVE OK/.test(vfs['/workspace/todo.md']), `todo.md not written: ${Object.keys(vfs)}`);
+    await p6.screenshot({ path: resolve(SHOTS, 'opencode-native.png') });
+    await c6.close();
+  });
 } else {
-  console.log('  – opencode LIVE test skipped (bridge not running; start `npm run opencode`)');
+  console.log('  – opencode LIVE/NATIVE tests skipped (bridge not running; start `npm run opencode`)');
 }
+
+await test('opencode window: agent mode switch (auto / native / bridge) is persisted', async () => {
+  const c7 = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const p7 = await c7.newPage();
+  await p7.goto(url, { waitUntil: 'load' });
+  await iconOf(p7, 'opencode').dblclick();
+  await p7.waitForSelector('text=/live · v|demo · bridge offline|native ·/', { timeout: 15_000 });
+  await p7.locator('[aria-label="Bridge settings"]').click();
+  const form = p7.locator('[data-bridge-config]');
+  expect(await form.locator('[data-agent-mode]').getAttribute('data-agent-mode') === 'auto', 'default agent mode is not auto');
+  await form.getByRole('radio', { name: /native/ }).click();
+  expect(await p7.evaluate(() => localStorage.getItem('nebula.agentMode')) === 'native', 'agent mode not persisted');
+  await form.getByRole('radio', { name: 'auto' }).click();
+  expect(await p7.evaluate(() => localStorage.getItem('nebula.agentMode')) === null, 'agent mode not reset');
+  await c7.close();
+});
 
 await test('responsive: 390×844 phone viewport still shows taskbar + icons and opens an app', async () => {
   const c3 = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -284,12 +354,12 @@ await test('opencode window: bridge URL setting (Android / remote PC) is persist
   await p5.waitForSelector('text=/live · v|demo · bridge offline/', { timeout: 15_000 });
   await p5.locator('[aria-label="Bridge settings"]').click();
   const form = p5.locator('[data-bridge-config]');
-  await form.locator('input').fill('http://127.0.0.1:1');   // nothing listens here → must fall back to demo
+  await form.locator('input').first().fill('http://127.0.0.1:1');   // nothing listens here → must fall back to demo
   await form.getByRole('button', { name: 'connect' }).click();
   await p5.waitForSelector('text=demo · bridge offline', { timeout: 15_000 });
   expect(await p5.evaluate(() => localStorage.getItem('nebula.bridgeUrl')) === 'http://127.0.0.1:1', 'bridge url not persisted');
   await p5.locator('[aria-label="Bridge settings"]').click();
-  await p5.locator('[data-bridge-config]').getByRole('button', { name: 'reset' }).click();
+  await p5.locator('[data-bridge-config]').getByRole('button', { name: 'reset', exact: true }).click();
   expect(await p5.evaluate(() => localStorage.getItem('nebula.bridgeUrl')) === null, 'bridge url not cleared');
   await c5.close();
 });

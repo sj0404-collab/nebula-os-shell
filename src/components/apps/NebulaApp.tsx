@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useOS } from '../../lib/os';
 import { NebulaGame, W, H } from '../../lib/nebula';
 import { NebulaWasm64 } from '../../lib/memory64';
+import { NebulaGL, type GLInfo } from '../../lib/webgl';
 import { RotateCcw, Download, Gauge, Cpu, Zap } from 'lucide-react';
 
 // Unified snapshot shape for rendering
@@ -138,6 +139,9 @@ export default function NebulaApp() {
   const [fps, setFps] = useState(60);
   const [hud, setHud] = useState({ score: 0, lives: 3, wave: 1, gameOver: false, win: false });
   const [autoRunning, setAutoRunning] = useState(false);
+  const [glInfo, setGlInfo] = useState<GLInfo | null>(null);
+  const [renderer, setRenderer] = useState<'webgl2' | 'webgl' | 'canvas2d'>('canvas2d');
+  const glRef = useRef<NebulaGL | null>(null);
   const [autoResult, setAutoResult] = useState<string | null>(null);
   const [benchResult, setBenchResult] = useState<string | null>(null);
   const scoreAtEnd = useRef(0);
@@ -198,8 +202,14 @@ export default function NebulaApp() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    // WebGL first (WebGL2 → WebGL1); Canvas 2D only if the GPU path is unavailable
+    let gl = glRef.current;
+    let ctx: CanvasRenderingContext2D | null = null;
+    if (!gl) {
+      try { gl = new NebulaGL(canvas); glRef.current = gl; setGlInfo(gl.info); setRenderer(gl.info.api); }
+      catch (e) { console.warn('WebGL unavailable, using Canvas 2D:', e); }
+    }
+    if (!gl) { ctx = canvas.getContext('2d'); if (!ctx) return; setRenderer('canvas2d'); }
     let raf = 0;
     let acc = 0, last = performance.now();
     let frames = 0, fpsTimer = performance.now();
@@ -215,16 +225,41 @@ export default function NebulaApp() {
         acc -= STEP; steps++;
       }
 
-      const snap: Snapshot = engine === 'wasm64'
-        ? { engine, ...wasm.current.state(), stars: wasm.current.stars(), bolts: wasm.current.bolts(), enemies: wasm.current.enemies(), parts: wasm.current.particles() }
-        : {
-            engine,
-            shipX: tsGame.current.shipX, shake: tsGame.current.shake, gameOver: tsGame.current.gameOver, win: tsGame.current.win,
-            score: tsGame.current.score, lives: tsGame.current.lives, wave: tsGame.current.wave,
-            stars: tsGame.current.stars, bolts: tsGame.current.bolts, enemies: tsGame.current.enemies, parts: tsGame.current.parts,
-          };
-
-      drawScene(ctx, snap, now);
+      let snap: Snapshot;
+      if (gl && engine === 'wasm64') {
+        // GPU path, zero-copy: vertex data is read straight out of the wasm64 linear memory
+        const st = wasm.current.state();
+        const v = wasm.current.views();
+        snap = { engine, ...st, stars: [], bolts: [], enemies: [], parts: [] };
+        gl.begin();
+        if (v) {
+          const { f32, strides } = v;
+          for (let i = 0; i < v.starsN; i++) { const o = (v.stars + i * strides.star) >> 2; gl.addStar(f32[o], f32[o + 1], f32[o + 2]); }
+          for (let i = 0; i < v.partsN; i++) { const o = (v.parts + i * strides.part) >> 2; gl.addParticle(f32[o], f32[o + 1], f32[o + 4]); }
+          for (let i = 0; i < v.boltsN; i++) { const o = (v.bolts + i * strides.bolt) >> 2; gl.addBolt(f32[o], f32[o + 1]); }
+          for (let i = 0; i < v.enemiesN; i++) { const o = (v.enemies + i * strides.enemy) >> 2; gl.addEnemy(f32[o], f32[o + 1], f32[o + 4]); }
+        }
+        if (!st.gameOver || st.lives > 0) gl.addShip(st.shipX, now);
+        gl.end({ score: st.score, lives: st.lives, wave: st.wave, gameOver: st.gameOver, win: st.win, engine }, st.shake, now);
+      } else {
+        snap = engine === 'wasm64'
+          ? { engine, ...wasm.current.state(), stars: wasm.current.stars(), bolts: wasm.current.bolts(), enemies: wasm.current.enemies(), parts: wasm.current.particles() }
+          : {
+              engine,
+              shipX: tsGame.current.shipX, shake: tsGame.current.shake, gameOver: tsGame.current.gameOver, win: tsGame.current.win,
+              score: tsGame.current.score, lives: tsGame.current.lives, wave: tsGame.current.wave,
+              stars: tsGame.current.stars, bolts: tsGame.current.bolts, enemies: tsGame.current.enemies, parts: tsGame.current.parts,
+            };
+        if (gl) {
+          gl.begin();
+          for (const st of snap.stars) gl.addStar(st.x, st.y, st.vy);
+          for (const p of snap.parts) gl.addParticle(p.x, p.y, p.life);
+          for (const b of snap.bolts) gl.addBolt(b.x, b.y);
+          for (const e of snap.enemies) gl.addEnemy(e.x, e.y, e.r);
+          if (!snap.gameOver || snap.lives > 0) gl.addShip(snap.shipX, now);
+          gl.end({ score: snap.score, lives: snap.lives, wave: snap.wave, gameOver: snap.gameOver, win: snap.win, engine }, snap.shake, now);
+        } else if (ctx) drawScene(ctx, snap, now);
+      }
 
       frames++;
       if (now - fpsTimer >= 500) {
@@ -336,11 +371,15 @@ export default function NebulaApp() {
             width={W}
             height={H}
             className="w-full rounded-md border border-cyan-900/70 shadow-[0_0_40px_rgba(30,180,255,0.25)] bg-black"
+            data-renderer={renderer}
+            data-engine={engine}
           />
           <div className="absolute top-2 right-2 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-[10px] font-mono backdrop-blur-sm border border-cyan-900/60">
             <span className={`font-bold ${fpsColor}`}>{fps} FPS</span>
             <span className="text-cyan-200/60">·</span>
             <span className="text-cyan-200/80">{engine === 'wasm64' ? 'WASM64 · MEMORY64' : 'TS CORE'}</span>
+            <span className="text-cyan-200/60">·</span>
+            <span className={renderer === 'canvas2d' ? 'text-amber-300' : 'text-emerald-300'} title={glInfo ? `${glInfo.renderer} · ${glInfo.version}` : 'Canvas 2D fallback'}>{renderer.toUpperCase()}</span>
           </div>
         </div>
         {touchUI && (
@@ -402,7 +441,8 @@ export default function NebulaApp() {
           wasm64-wasi · memory64<br />
           wasm32-wasi · WASI p1<br />
           core: deterministic C (xoro64)<br />
-          renderer: GDI / WebGL-class canvas
+          renderer: {renderer === 'canvas2d' ? 'Canvas 2D (fallback)' : renderer.toUpperCase()}<br />
+          {glInfo && <span className="break-all" data-gl-renderer>{glInfo.renderer.slice(0, 60)}</span>}
         </div>
       </div>
     </div>
