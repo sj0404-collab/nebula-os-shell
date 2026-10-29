@@ -31,3 +31,9 @@ opencode-bridge.exe
 test-*.png
 release/
 e2e/shots/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.*.json
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

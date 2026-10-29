@@ -128,7 +128,7 @@ async function proxy(req: Request, url: URL): Promise<Response> {
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm',
-  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.exe': 'application/octet-stream', '.zip': 'application/zip', '.pdb': 'application/octet-stream',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.map': 'application/json', '.txt': 'text/plain; charset=utf-8', '.exe': 'application/octet-stream', '.zip': 'application/zip', '.pdb': 'application/octet-stream',
 };
 
 function serveStatic(pathname: string): Response {
@@ -141,7 +141,7 @@ function serveStatic(pathname: string): Response {
   if (file !== DIST && !file.startsWith(DIST + sep)) return new Response('forbidden', { status: 403 });
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(DIST, 'index.html');
   const type = MIME[extname(file).toLowerCase()] ?? 'application/octet-stream';
-  return new Response(Bun.file(file), { headers: { 'content-type': type, 'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=3600' } });
+  return new Response(Bun.file(file), { headers: { 'content-type': type, 'cache-control': /index\.html$|sw\.js$|registerSW\.js$|\.webmanifest$/.test(file) ? 'no-cache' : 'public, max-age=3600' } });
 }
 
 try {

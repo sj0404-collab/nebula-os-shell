@@ -239,6 +239,61 @@ await test('responsive: 390×844 phone viewport still shows taskbar + icons and 
   await c3.close();
 });
 
+await test('PWA: manifest, icons and service worker are served', async () => {
+  const m = await (await fetch(`${url}/manifest.webmanifest`)).json();
+  expect(m.name && m.icons?.length >= 3 && m.display === 'standalone', 'manifest incomplete');
+  for (const i of m.icons) expect((await fetch(`${url}${i.src}`)).ok, `icon ${i.src} missing`);
+  expect((await fetch(`${url}/sw.js`)).ok, 'sw.js missing');
+  const html = await (await fetch(`${url}/`)).text();
+  expect(html.includes('rel="manifest"') && html.includes('theme-color'), 'index.html lacks manifest/theme-color');
+  expect(!/designarena|rrweb/.test(html), 'third-party telemetry still in index.html');
+  const ctl = await page.evaluate(async () => { if (!('serviceWorker' in navigator)) return 'unsupported'; const r = await Promise.race([navigator.serviceWorker.ready.then(() => 'ready'), new Promise(res => setTimeout(() => res('timeout'), 8000))]); return r; });
+  expect(ctl === 'ready' || ctl === 'unsupported', `service worker not ready: ${ctl}`);
+});
+
+await test('phone: Nebula Strike shows touch controls and they drive the ship', async () => {
+  const c4 = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const p4 = await c4.newPage();
+  await p4.goto(url, { waitUntil: 'load' });
+  await iconOf(p4, 'Nebula Strike').tap();
+  await sleep(600);
+  const ctl = p4.locator('[data-touch-controls]');
+  expect(await ctl.count() === 1, 'touch controls not rendered on a touch device');
+  const fire = ctl.getByRole('button', { name: 'Fire' });
+  const fb = await fire.boundingBox();
+  expect(fb && fb.x >= 0 && fb.x + fb.width <= 390, 'FIRE button off-screen');
+  await fire.dispatchEvent('pointerdown', { pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0 });
+  await sleep(100);
+  expect((await ctl.getAttribute('data-pressed')).includes('fire'), 'fire not registered on pointerdown');
+  await fire.dispatchEvent('pointerup', { pointerId: 1, pointerType: 'touch' });
+  await sleep(50);
+  expect(!(await ctl.getAttribute('data-pressed')).includes('fire'), 'fire not released on pointerup');
+  const left = ctl.getByRole('button', { name: 'Move left' });
+  await left.dispatchEvent('pointerdown', { pointerId: 2, pointerType: 'touch', isPrimary: true, button: 0 });
+  await sleep(400);
+  await left.dispatchEvent('pointerup', { pointerId: 2, pointerType: 'touch' });
+  await p4.screenshot({ path: resolve(SHOTS, 'phone-game.png') });
+  await c4.close();
+});
+
+await test('opencode window: bridge URL setting (Android / remote PC) is persisted and re-probes', async () => {
+  const c5 = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const p5 = await c5.newPage();
+  await p5.goto(url, { waitUntil: 'load' });
+  await iconOf(p5, 'opencode').dblclick();
+  await p5.waitForSelector('text=/live · v|demo · bridge offline/', { timeout: 15_000 });
+  await p5.locator('[aria-label="Bridge settings"]').click();
+  const form = p5.locator('[data-bridge-config]');
+  await form.locator('input').fill('http://127.0.0.1:1');   // nothing listens here → must fall back to demo
+  await form.getByRole('button', { name: 'connect' }).click();
+  await p5.waitForSelector('text=demo · bridge offline', { timeout: 15_000 });
+  expect(await p5.evaluate(() => localStorage.getItem('nebula.bridgeUrl')) === 'http://127.0.0.1:1', 'bridge url not persisted');
+  await p5.locator('[aria-label="Bridge settings"]').click();
+  await p5.locator('[data-bridge-config]').getByRole('button', { name: 'reset' }).click();
+  expect(await p5.evaluate(() => localStorage.getItem('nebula.bridgeUrl')) === null, 'bridge url not cleared');
+  await c5.close();
+});
+
 await test('no uncaught page errors during the run', async () => {
   expect(errors.length === 0, errors.slice(0, 5).join(' | '));
 });

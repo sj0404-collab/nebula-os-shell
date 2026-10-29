@@ -85,3 +85,18 @@
 
 ### CI
 `.github/workflows/ci.yml`: матрица **ubuntu / windows / macos** — lint, typecheck, build, установка настоящего `opencode-ai`, `bun test` моста, Playwright e2e с живым мостом, артефакты‑скриншоты; затем сборка бинарников моста для 5 платформ и Release по тегу `v*`.
+
+---
+
+## Дополнение (2026-10-29): Web + Android
+
+| Что сделано | Проверка |
+|---|---|
+| **PWA**: `manifest.webmanifest`, иконки 192/512/maskable, service worker (vite-plugin-pwa, autoUpdate; `/api/opencode` — NetworkOnly, `downloads/` не кэшируется), `theme-color`, `viewport-fit=cover` | e2e «PWA: manifest, icons and service worker are served» — manifest валиден, все иконки отдаются, SW `ready` |
+| Убраны сторонние скрипты телеметрии (rrweb / designarena) из `index.html` | e2e проверяет их отсутствие |
+| **Android‑приложение (Capacitor 8)**: `android/` проект, appId `com.bigpickle.nebulaos`, иконки, cleartext для моста в LAN, подписанный release APK в CI (демо‑keystore в репо, переопределяется env) | CI job «Android APK (Capacitor)»: `gradlew assembleRelease` → `apksigner verify` + `aapt dump badging`; APK прикрепляется к Release по тегу |
+| **Настройка адреса моста** в окне opencode (⚙): для APK/статического хостинга — `http://IP‑ПК:8787`; хранится в localStorage, окно переподключается; CORS у моста уже `*` | e2e «bridge URL setting…»: сохранение, fallback в demo при недоступном адресе, сброс |
+| **Сенсорное управление** в Nebula Strike (◀ ▶ FIRE, restart) для устройств с `pointer: coarse`, вертикальная раскладка панели на узких экранах | e2e «phone: Nebula Strike shows touch controls…» — кнопки в пределах 390 px, pointerdown/up переключают состояние, корабль двигается |
+| Мост отдаёт `.webmanifest`, `sw.js`/`registerSW.js` с `no-cache` | bun test моста (4/4) |
+
+Итого e2e: **18/18** локально (с живым мостом); полный прогон — в GitHub Actions на ubuntu/windows/macos + Android‑сборка.

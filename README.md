@@ -32,6 +32,24 @@ Scripts
 | `npm test` / `npm run test:all` | lint + typecheck + e2e (+ bridge test) |
 | `npm run opencode:compile:all` | binaries for linux‑x64/arm64, macOS arm64/x64, windows‑x64 → `release/` |
 
+## Platforms
+
+| Platform | How |
+|---|---|
+| **Web** (any modern browser, desktop/mobile) | `npm run dev` / `npm run preview` / the bridge itself serves `dist/` on :8787 |
+| **PWA** (installable on Android, iOS, ChromeOS, Windows, macOS) | open the site → "Install app" / "Add to Home screen"; offline shell, `/api` never cached |
+| **Android APK** (Capacitor) | CI builds a signed `NebulaOS-vX.Y.Z-android.apk` (Releases). Bridge runs on a PC in the same Wi‑Fi: `npm run opencode`, then in the opencode window press ⚙ and enter `http://<pc-ip>:8787` |
+| **Windows / macOS / Linux** | `npm run opencode` or the single‑file `opencode-bridge-*` binary from Releases (serves the desktop + real agent) |
+
+Touch devices get on‑screen controls in Nebula Strike (◀ ▶ FIRE), pointer‑event window dragging and maximized windows under 640 px.
+
+### Android build locally
+```bash
+npm run build && npx cap sync android
+cd android && ./gradlew assembleRelease      # android/app/build/outputs/apk/release/app-release.apk
+```
+(JDK 17+, Android SDK; the demo keystore `android/keystore/nebula-release.jks` is in the repo — override with `NEBULA_KEYSTORE*` env vars for your own key.)
+
 ## Cross‑platform
 
 * Runs on **Windows, macOS and Linux**: the bridge finds `opencode` in PATH, `~/.bun/bin`, `node_modules/.bin`,

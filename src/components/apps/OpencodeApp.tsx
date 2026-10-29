@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOS } from '../../lib/os';
 import { bigPickleScript, bigPickleAnswer, type AgentMessage } from '../../lib/agent';
 import { AppIcon } from '../icons';
-import { Terminal, Trash2, SendHorizonal, ChevronRight, Circle, CheckCircle2, Square, Wifi, WifiOff } from 'lucide-react';
+import { Terminal, Trash2, SendHorizonal, ChevronRight, Circle, CheckCircle2, Square, Wifi, WifiOff, Settings2 } from 'lucide-react';
+import { apiBase, getBridgeUrl, setBridgeUrl, isNativeApp } from '../../lib/bridge';
 
 /**
  * opencode TUI.
@@ -11,7 +12,6 @@ import { Terminal, Trash2, SendHorizonal, ChevronRight, Circle, CheckCircle2, Sq
  *  - DEMO mode (bridge not running): the scripted Big Pickle showcase from lib/agent.ts.
  */
 
-const API = '/api/opencode';
 
 interface Msg extends AgentMessage { visible?: boolean }
 
@@ -49,6 +49,9 @@ function toolSummary(p: OcPart): { first: string; rest: string } {
 export default function OpencodeApp() {
   const { openApp, pushToast } = useOS();
   const [mode, setMode] = useState<'probing' | 'real' | 'demo'>('probing');
+  const [API, setAPI] = useState(apiBase());           // same-origin proxy or a remote bridge (Android / static hosting)
+  const [showCfg, setShowCfg] = useState(false);
+  const [cfgUrl, setCfgUrl] = useState(getBridgeUrl());
   const [bridge, setBridge] = useState<BridgeInfo | null>(null);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -78,14 +81,22 @@ export default function OpencodeApp() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(`${API}/bridge`, { signal: AbortSignal.timeout(2500) });
+        const r = await fetch(`${API}/bridge`, { signal: AbortSignal.timeout(3500) });
         const j = (await r.json()) as BridgeInfo;
         if (!cancelled && r.ok && j.ok) { setBridge(j); setMode('real'); return; }
       } catch { /* bridge not running */ }
       if (!cancelled) setMode('demo');
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [API]);
+
+  const applyBridgeUrl = () => {
+    setBridgeUrl(cfgUrl);
+    setShowCfg(false);
+    startedRef.current = false;
+    setMode('probing');
+    setAPI(apiBase());
+  };
 
   // ===== REAL: create session + subscribe to events =====
   const upsertPart = useCallback((part: OcPart) => {
@@ -167,7 +178,7 @@ export default function OpencodeApp() {
     } catch (e) {
       setRealError(e instanceof Error ? e.message : String(e));
     }
-  }, [upsertPart]);
+  }, [upsertPart, API]);
 
   useEffect(() => {
     if (mode !== 'real') return;
@@ -243,7 +254,7 @@ export default function OpencodeApp() {
 
   const clear = () => {
     if (mode === 'real') { abortReal(); void startRealSession(); return; }
-    setMessages([{ id: Date.now(), role: 'system', content: 'opencode (demo) · model: big-pickle · bridge offline\nЗапустите `bun run opencode/bridge.ts`, чтобы говорить с настоящим агентом.\nЗадай вопрос: fps / exe / steam / тест / source — или: /build <что построить>', time: Date.now() }]);
+    setMessages([{ id: Date.now(), role: 'system', content: 'opencode (demo) · model: big-pickle · bridge offline\nЗапустите `npm run opencode` (bun run opencode/bridge.ts) — на телефоне/Android укажите адрес моста через ⚙.\nЗадай вопрос: fps / exe / steam / тест / source — или: /build <что построить>', time: Date.now() }]);
   };
 
   const renderDemo = (m: Msg) => {
@@ -300,9 +311,19 @@ export default function OpencodeApp() {
             <span className="text-[9px] text-[#8a8f9c]">connecting…</span>
           )}
           {mode === 'real' && busy && <button onClick={abortReal} title="Abort" className="rounded p-1 text-[#ff6b6b] hover:bg-white/10"><Square size={12} /></button>}
+          <button onClick={() => setShowCfg(v => !v)} title="Bridge URL (Android / remote PC)" aria-label="Bridge settings" className={`rounded p-1 hover:bg-white/10 ${getBridgeUrl() ? 'text-[#3dd68c]' : ''}`}><Settings2 size={13} /></button>
           <button onClick={clear} title="New session" className="rounded p-1 hover:bg-white/10"><Trash2 size={13} /></button>
         </div>
       </div>
+      {showCfg && (
+        <form className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 bg-[#111318] px-3 py-2 text-[10px]" onSubmit={e => { e.preventDefault(); applyBridgeUrl(); }} data-bridge-config>
+          <span className="text-[#8a8f9c]">bridge URL</span>
+          <input value={cfgUrl} onChange={e => setCfgUrl(e.target.value)} placeholder={isNativeApp() ? 'http://192.168.1.10:8787  (PC running: npm run opencode)' : 'empty = same origin (/api/opencode)'} className="min-w-[220px] flex-1 rounded border border-white/10 bg-black/40 px-2 py-1 text-[#e8f4ff] outline-none focus:border-[#3dd68c]/60" spellCheck={false} />
+          <button type="submit" className="rounded border border-[#3dd68c]/50 bg-[#3dd68c]/15 px-2 py-1 font-bold text-[#3dd68c]">connect</button>
+          <button type="button" onClick={() => { setCfgUrl(''); setBridgeUrl(''); setShowCfg(false); startedRef.current = false; setMode('probing'); setAPI(apiBase()); }} className="rounded border border-white/10 px-2 py-1 text-[#8a8f9c]">reset</button>
+          <span className="basis-full text-[#555b68]">{isNativeApp() ? 'В Android‑приложении мост запускается на компьютере в той же Wi‑Fi сети: `npm run opencode` → укажите http://IP‑компьютера:8787' : 'Пусто — тот же сервер (vite/мост). Для телефона откройте http://IP‑компьютера:8787 или укажите его здесь.'}</span>
+        </form>
+      )}
 
       <div className="flex min-h-0 flex-1">
         {/* file tree */}

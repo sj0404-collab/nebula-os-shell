@@ -309,10 +309,27 @@ export default function NebulaApp() {
 
   const fpsColor = fps >= 55 ? 'text-emerald-400' : fps >= 30 ? 'text-amber-400' : 'text-red-400';
 
+  // on-screen controls for phones/tablets (Android, iOS, touch laptops)
+  const coarse = () => window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+  const [touchUI, setTouchUI] = useState<boolean>(() => coarse());
+  const [pressed, setPressed] = useState<string>('');
+  useEffect(() => {
+    const mq = window.matchMedia('(pointer: coarse)');
+    const upd = () => setTouchUI(coarse());
+    mq.addEventListener('change', upd);
+    return () => mq.removeEventListener('change', upd);
+  }, []);
+  const hold = (k: 'left' | 'right' | 'fire') => ({
+    onPointerDown: (e: React.PointerEvent) => { e.preventDefault(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); keys.current[k] = true; setPressed(p => p.includes(k) ? p : (p + ' ' + k).trim()); },
+    onPointerUp: () => { keys.current[k] = false; setPressed(p => p.split(' ').filter(x => x !== k).join(' ')); },
+    onPointerCancel: () => { keys.current[k] = false; setPressed(p => p.split(' ').filter(x => x !== k).join(' ')); },
+    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+  });
+
   return (
-    <div className="flex h-full w-full bg-[#05070f] text-[#cfe3ff]">
+    <div className="flex h-full w-full flex-col sm:flex-row bg-[#05070f] text-[#cfe3ff] overflow-y-auto sm:overflow-hidden">
       {/* game canvas */}
-      <div className="flex flex-1 min-w-0 flex-col items-center justify-center p-3">
+      <div className="flex flex-1 min-w-0 flex-col items-center justify-center p-3 gap-2">
         <div className="relative w-full max-w-[760px]">
           <canvas
             ref={canvasRef}
@@ -326,10 +343,20 @@ export default function NebulaApp() {
             <span className="text-cyan-200/80">{engine === 'wasm64' ? 'WASM64 · MEMORY64' : 'TS CORE'}</span>
           </div>
         </div>
+        {touchUI && (
+          <div className="flex w-full max-w-[760px] select-none items-center justify-between gap-2 font-mono text-[12px]" data-touch-controls data-pressed={pressed}>
+            <div className="flex gap-2">
+              <button {...hold('left')} aria-label="Move left" className="h-14 w-16 touch-none rounded-lg border border-cyan-700/60 bg-cyan-950/50 text-xl text-cyan-100 active:bg-cyan-700/60">◀</button>
+              <button {...hold('right')} aria-label="Move right" className="h-14 w-16 touch-none rounded-lg border border-cyan-700/60 bg-cyan-950/50 text-xl text-cyan-100 active:bg-cyan-700/60">▶</button>
+            </div>
+            <button onClick={doReset} aria-label="Restart" className="h-10 rounded-lg border border-white/10 bg-white/5 px-3 text-[10px] text-cyan-200/70">R · restart</button>
+            <button {...hold('fire')} aria-label="Fire" className="h-14 w-24 touch-none rounded-lg border border-emerald-600/60 bg-emerald-950/50 font-bold tracking-widest text-emerald-200 active:bg-emerald-600/60">FIRE</button>
+          </div>
+        )}
       </div>
 
       {/* side panel */}
-      <div className="w-[210px] shrink-0 border-l border-cyan-950/80 bg-[#070b16] p-3 flex flex-col gap-3 text-[11px] font-mono overflow-y-auto">
+      <div className="w-full sm:w-[210px] shrink-0 border-t sm:border-t-0 sm:border-l border-cyan-950/80 bg-[#070b16] p-3 flex flex-col gap-3 text-[11px] font-mono sm:overflow-y-auto">
         <div>
           <div className="text-cyan-300/70 text-[10px] tracking-widest mb-1">TELEMETRY</div>
           <div className="grid grid-cols-2 gap-1">
