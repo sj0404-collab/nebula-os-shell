@@ -62,7 +62,8 @@ jobs:
         with: { node-version: 22, cache: npm }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest already ships the Android SDK (ANDROID_HOME) with accepted licences; Gradle downloads platform 36 itself
+      - run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
       - run: npm ci
       - run: npm run build
       - run: npx cap sync android
